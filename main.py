@@ -9,6 +9,7 @@ from urllib.request import urlopen
 import requests
 import psutil
 from supabase import create_client, Client
+import uvicorn
 
 load_dotenv()
 
@@ -99,3 +100,9 @@ def read_me():
         }
     }
     return me
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    
