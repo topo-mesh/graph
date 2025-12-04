@@ -1,10 +1,11 @@
 from typing import Union
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pydantic import BaseModel
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.request import urlopen
 import requests
 import psutil
@@ -12,23 +13,38 @@ from supabase import create_client, Client
 import uvicorn
 import asyncio
 
+
 load_dotenv()
 
-URL_CURRENT: str = os.environ["URL_CURRENT"]
 
-# SUPABASE
-url: str = os.environ["SUPABASE_URL"]
-key: str = os.environ["SUPABASE_KEY"]
+# CONSTANTS - DO NOT CHANGE
+SERVICE_NAME: str = os.environ["SERVICE_NAME"]
+SUPABASE_URL: str = os.environ["SUPABASE_URL"]
+SUPABASE_KEY: str = os.environ["SUPABASE_KEY"]
 
-supabase: Client = create_client(url, key)
-supabase_response = (supabase.table("servers").select("*").execute())
-sb_servers = supabase_response.model_dump()
-
-
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 response_ipinfo =  urlopen("https://ipinfo.io/json")
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    enviroment = {}
+    try:
+        enviroment = supabase.table("servers").select("*").eq("name", SERVICE_NAME).execute().model_dump()
+        app.state.config = enviroment["data"]
+    except Exception as e:
+        raise SystemError(f"ERROR: Failed to load configuration for {SERVICE_NAME}. Details: {e}")
+
+    async def scheduled_ping_loop():
+        while True:
+            await execute_ping() 
+            await asyncio.sleep(60) 
+    asyncio.create_task(scheduled_ping_loop())
+    yield
+    del app.state.config
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/")
@@ -47,6 +63,8 @@ def read_health():
 @app.get("/ping")
 def read_ping():
     data = {}
+    # This is UNSAFE + DANGEROUS + VULNERABLE
+    sb_servers = (supabase.table("servers").select("*").execute()).model_dump()
     for server in sb_servers["data"]:
         try:
             response = requests.get(server["url"], timeout=5)
@@ -105,24 +123,13 @@ def read_me():
 
 @app.get("/is_active")
 async def execute_ping():
-    data, count = (supabase.table("servers").update({
+    data = (supabase.table("servers").update({
         "is_active": True,
         "last_ping_at": "now()" 
-        }).eq("url", URL_CURRENT).execute())
-    return data, count
-
-
-@app.on_event("startup")
-async def start_scheduled_loop():
-    async def scheduled_ping_loop():
-        while True:
-            await execute_ping() 
-            await asyncio.sleep(60) 
-
-    asyncio.create_task(scheduled_ping_loop())
+        }).eq("name", SERVICE_NAME).execute()).model_dump()
+    return data["data"]
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-    
